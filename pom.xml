@@ -15,7 +15,25 @@
     <project.build.sourceEncoding>utf-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>utf-8</project.reporting.outputEncoding>
   </properties>
+  <profiles>
+    <profile>
+      <id>qa</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <properties>
+        <deploy.env>QA</deploy.env>
+      </properties>
+    </profile>
 
+    <profile>
+      <id>prod</id>
+      <properties>
+        <deploy.env>PROD</deploy.env>
+      </properties>
+    </profile>
+  </profiles>
+         
   <modules>
     <module>server</module>
     <module>webapp</module>
