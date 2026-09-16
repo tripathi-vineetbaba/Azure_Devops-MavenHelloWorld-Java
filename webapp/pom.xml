@@ -23,6 +23,25 @@
         <groupId>org.mortbay.jetty</groupId>
         <artifactId>jetty-maven-plugin</artifactId>
       </plugin>
+         <plugin>
+                  <artifactId>maven-war-plugin<\artfactId>
+                  <version>3.4.0</version>
+                  <configuration>
+                            <useDefaultDelimiters>false</useDefaultDelimiters>
+                           <delimiters>
+                              <delimiter>@</delimiter>
+                            </delimiters>
+                           <webResources>
+                                    <resources>
+                                             <directory>src/main/webapp</directory>
+                                             <filtering>true</filtering>
+                                                  <includes>
+                                                    <include>**/*.jsp</include>
+                                                  </includes>
+                                       </resource>
+                            </webResources>
+                 </configuration>
+      </plugin>
     </plugins>
   </build>
 
