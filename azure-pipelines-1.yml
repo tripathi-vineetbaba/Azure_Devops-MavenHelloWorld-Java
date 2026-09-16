@@ -1,0 +1,182 @@
+# Maven build + environment-scoped deployment (QA / PROD)
+# Jenkins declarative equivalent: parameters -> variables -> stages -> post
+
+trigger:
+  batch: true # queue instead of running concurrently (Jenkins: disableConcurrentBuilds)
+  branches:
+    include:
+      - CICD_Yaml
+
+# 1. PARAMETERS DEFINITION (prompted at queue time)
+parameters:
+  - name: ENVIRONMENT
+    displayName: Target deployment environment
+    type: string
+    default: QA
+    values:
+      - QA
+      - PROD
+
+  - name: APP_VERSION
+    displayName: Application release version
+    type: string
+    default: 1.0.0
+
+  - name: RUN_TESTS
+    displayName: Toggle unit/integration testing
+    type: boolean
+    default: true
+
+  - name: FAIL_ON_NON_CRITICAL
+    displayName: Non-critical failures stop the pipeline
+    type: boolean
+    default: false
+
+pool:
+  vmImage: ubuntu-latest
+
+# 2. ENVIRONMENT VARIABLES
+variables:
+  - group: deploy-secrets # holds DEPLOY_KEY (Jenkins: credentials('my-ssh-deploy-key'))
+  - name: GLOBAL_APP_NAME
+    value: DevOps-Academy
+  - name: MAVEN_CLI_OPTS
+    value: '-B'
+  - name: MAVEN_PROFILE
+    value: ${{ lower(parameters.ENVIRONMENT) }} # qa | prod -> Maven -P profile
+  - name: POM_FILE
+    value: 'pom.xml'
+
+stages:
+
+  - stage: Initialize
+    displayName: Initialize & Log Params
+    jobs:
+      - job: LogParams
+        steps:
+          - checkout: none
+          - script: |
+              echo "Deploying $(GLOBAL_APP_NAME) version ${{ parameters.APP_VERSION }} to ${{ parameters.ENVIRONMENT }}"
+              echo "Maven profile: $(MAVEN_PROFILE)"
+            displayName: Echo parameters
+
+  # 3. CONDITIONAL EXECUTION (Jenkins: when { expression { ... } })
+  - stage: UnitTests
+    displayName: Unit Tests
+    dependsOn: Initialize
+    condition: and(succeeded(), ${{ eq(parameters.RUN_TESTS, true) }})
+    jobs:
+      - job: Test
+        timeoutInMinutes: 60
+        steps:
+          - task: Maven@4
+            displayName: mvn test
+            inputs:
+              mavenPomFile: '$(POM_FILE)'
+              goals: 'test'
+              options: '$(MAVEN_CLI_OPTS) -P$(MAVEN_PROFILE)'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.11'
+              jdkArchitectureOption: 'x64'
+              publishJUnitResults: true # Jenkins: post { always { junit ... } }
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+
+  # 4. PROCEED ON FAIL / EXIT ON FAIL
+  - stage: SecurityScan
+    displayName: Non-Critical Security Scan
+    dependsOn: UnitTests
+    condition: not(failed())
+    jobs:
+      - job: Scan
+        steps:
+          - script: |
+              echo 'Running optional security checks...'
+              exit 1
+            displayName: Security scan
+            # false -> hard fail the pipeline, true -> logged as a warning and build continues
+            continueOnError: ${{ not(parameters.FAIL_ON_NON_CRITICAL) }}
+
+  - stage: Build
+    displayName: Build Artifact
+    dependsOn: SecurityScan
+    condition: not(failed())
+    jobs:
+      - job: Package
+        steps:
+          - task: Maven@4
+            displayName: mvn clean package
+            inputs:
+              mavenPomFile: '$(POM_FILE)'
+              goals: 'clean package'
+              options: '$(MAVEN_CLI_OPTS) -DskipTests -P$(MAVEN_PROFILE)'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.11'
+              jdkArchitectureOption: 'x64'
+              publishJUnitResults: false
+
+          - task: CopyFiles@2
+            displayName: Stage WAR
+            inputs:
+              Contents: '**/*.war'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          - task: PublishBuildArtifacts@1
+            displayName: Publish WAR
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'war'
+              publishLocation: 'Container'
+
+  # 5. DEPLOY TO QA
+  - stage: DeployQA
+    displayName: Deploy to QA
+    dependsOn: Build
+    condition: and(succeeded(), ${{ eq(parameters.ENVIRONMENT, 'QA') }})
+    jobs:
+      - deployment: DeployQA
+        environment: QA
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: war
+                - script: echo "Deploying version ${{ parameters.APP_VERSION }} to QA Server..."
+                  displayName: Deploy
+
+  # 6. DEPLOY TO PROD - manual gate comes from the PROD environment's approval check
+  - stage: DeployPROD
+    displayName: Deploy to PROD
+    dependsOn: Build
+    condition: and(succeeded(), ${{ eq(parameters.ENVIRONMENT, 'PROD') }})
+    jobs:
+      - deployment: DeployPROD
+        environment: PROD
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: war
+                - script: echo "Deploying version ${{ parameters.APP_VERSION }} to PRODUCTION..."
+                  displayName: Deploy
+
+  # 7. POST-EXECUTION HANDLING (Jenkins: post { always / success / failure })
+  - stage: Post
+    displayName: Post Actions
+    dependsOn:
+      - DeployQA
+      - DeployPROD
+    condition: always()
+    jobs:
+      - job: Report
+        steps:
+          - checkout: none
+          - script: echo 'Pipeline completed successfully!'
+            displayName: On success
+            condition: succeeded()
+          - script: echo 'Pipeline failed! Downstream stages were SKIPPED.'
+            displayName: On failure
+            condition: failed()
